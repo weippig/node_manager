@@ -1,7 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -9,95 +13,240 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
+	_ "github.com/mattn/go-sqlite3"
 )
 
-// Global container to hold the current screen
-var content *fyne.Container
+// --- Structs and Globals ---
 
-// setScreen updates the main content area with a new screen
+type Node struct {
+	ID       int
+	Name     string
+	IP       string
+	Username string
+	Password string
+}
+
+var content *fyne.Container
+var db *sql.DB
+
+// --- Database & File I/O Functions ---
+
+func initDB() {
+	var err error
+	db, err = sql.Open("sqlite3", "./nodes.db")
+	if err != nil {
+		log.Fatal("Failed to open database:", err)
+	}
+
+	statement, err := db.Prepare(`
+		CREATE TABLE IF NOT EXISTS nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			ip TEXT NOT NULL,
+			username TEXT NOT NULL,
+			password TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		log.Fatal("Failed to prepare table creation:", err)
+	}
+	_, err = statement.Exec()
+	if err != nil {
+		log.Fatal("Failed to execute table creation:", err)
+	}
+}
+
+func loadNodes() []Node {
+	rows, err := db.Query("SELECT id, name, ip, username, password FROM nodes ORDER BY name ASC")
+	if err != nil {
+		log.Println("Failed to query nodes:", err)
+		return []Node{} // Return empty slice on error
+	}
+	defer rows.Close()
+
+	var nodes []Node
+	for rows.Next() {
+		var n Node
+		if err := rows.Scan(&n.ID, &n.Name, &n.IP, &n.Username, &n.Password); err != nil {
+			log.Println("Failed to scan node row:", err)
+			continue
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes
+}
+
+func loadScripts() []string {
+	scriptDir := "script"
+	files, err := os.ReadDir(scriptDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{} // Directory doesn't exist yet, return empty
+		}
+		log.Println("Failed to read script directory:", err)
+		return []string{}
+	}
+
+	var scripts []string
+	for _, file := range files {
+		if !file.IsDir() {
+			scripts = append(scripts, file.Name())
+		}
+	}
+	return scripts
+}
+
+// --- Screen Management ---
+
 func setScreen(c fyne.CanvasObject) {
 	content.Objects = []fyne.CanvasObject{c}
 	content.Refresh()
 }
 
 func main() {
+	initDB()
+	defer db.Close()
+
 	myApp := app.New()
 	myWindow := myApp.NewWindow("Node & Script Manager")
 	myWindow.Resize(fyne.NewSize(600, 400))
 
-	// The main content area, using MaxLayout to fill the space
 	content = container.New(layout.NewMaxLayout())
 
-	// --- Create Screens ---
-	executeScreen := makeExecuteScreen()
+	// Create screen instances
 	addNodeScreen := makeAddNodeScreen()
 	addScriptScreen := makeAddScriptScreen()
 
-	// --- Create Sidebar ---
 	sidebar := container.NewVBox(
-		widget.NewButton("首頁", func() {
-			setScreen(executeScreen)
-		}),
-		widget.NewButton("添加節點", func() {
-			setScreen(addNodeScreen)
-		}),
-		widget.NewButton("添加腳本", func() {
-			setScreen(addScriptScreen)
-		}),
+		widget.NewButton("首頁", func() { setScreen(makeExecuteScreen()) }), // Re-create to refresh data
+		widget.NewButton("添加節點", func() { setScreen(addNodeScreen) }),
+		widget.NewButton("添加腳本", func() { setScreen(addScriptScreen) }),
 	)
 
-	// --- Create the Main Layout ---
-	// HSplit provides a draggable vertical separator
 	split := container.NewHSplit(sidebar, content)
-	split.Offset = 0.2 // Give the sidebar an initial 20% width
+	split.Offset = 0.2
 
-	// Set the initial screen to be the execute screen
-	setScreen(executeScreen)
+	setScreen(makeExecuteScreen()) // Set initial screen
 
 	myWindow.SetContent(split)
 	myWindow.ShowAndRun()
 }
 
-// makeAddNodeScreen creates the placeholder screen for adding nodes
+// --- Screen Definitions ---
+
 func makeAddNodeScreen() fyne.CanvasObject {
-	return container.NewVBox(
-		widget.NewLabel("Hello World - Add Node Screen"),
-		widget.NewButton("返回", func() {
-			// Return to the main execute screen
-			setScreen(makeExecuteScreen())
-		}),
+	nameEntry := widget.NewEntry()
+	nameEntry.SetPlaceHolder("e.g., Web Server 1")
+	ipEntry := widget.NewEntry()
+	ipEntry.SetPlaceHolder("e.g., 192.168.1.100")
+	userEntry := widget.NewEntry()
+	userEntry.SetPlaceHolder("e.g., admin")
+	passEntry := widget.NewPasswordEntry()
+	passEntry.SetPlaceHolder("Password")
+
+	statusLabel := widget.NewLabel("")
+
+	form := widget.NewForm(
+		&widget.FormItem{Text: "Node Name", Widget: nameEntry},
+		&widget.FormItem{Text: "IP Address", Widget: ipEntry},
+		&widget.FormItem{Text: "Username", Widget: userEntry},
+		&widget.FormItem{Text: "Password", Widget: passEntry},
+	)
+
+	form.OnSubmit = func() {
+		statement, err := db.Prepare("INSERT INTO nodes (name, ip, username, password) VALUES (?, ?, ?, ?)")
+		if err != nil {
+			log.Println("DB prepare error:", err)
+			statusLabel.SetText("Database error.")
+			return
+		}
+		defer statement.Close()
+
+		_, err = statement.Exec(nameEntry.Text, ipEntry.Text, userEntry.Text, passEntry.Text)
+		if err != nil {
+			log.Println("DB exec error:", err)
+			statusLabel.SetText("Error: Node name may already exist.")
+			return
+		}
+
+		statusLabel.SetText(fmt.Sprintf("Node '%s' saved.", nameEntry.Text))
+		form.Refresh()
+	}
+
+	return container.NewBorder(
+		nil,
+		container.NewVBox(widget.NewButton("返回", func() { setScreen(makeExecuteScreen()) }), statusLabel),
+		nil, nil,
+		form,
 	)
 }
 
-// makeAddScriptScreen creates the placeholder screen for adding scripts
 func makeAddScriptScreen() fyne.CanvasObject {
-	return container.NewVBox(
-		widget.NewLabel("Hello World - Add Script Screen"),
-		widget.NewButton("返回", func() {
-			// Return to the main execute screen
-			setScreen(makeExecuteScreen())
-		}),
+	filenameEntry := widget.NewEntry()
+	filenameEntry.SetPlaceHolder("e.g., my_script.sh")
+
+	contentEntry := widget.NewMultiLineEntry()
+	contentEntry.SetPlaceHolder("#!/bin/bash\necho \"Hello from script\"\n")
+
+	statusLabel := widget.NewLabel("")
+
+	form := widget.NewForm(
+		&widget.FormItem{Text: "Script Filename", Widget: filenameEntry},
+		&widget.FormItem{Text: "Script Content", Widget: contentEntry},
+	)
+
+	form.OnSubmit = func() {
+		scriptDir := "script"
+		if err := os.MkdirAll(scriptDir, 0755); err != nil {
+			statusLabel.SetText("Error creating directory.")
+			return
+		}
+		filePath := filepath.Join(scriptDir, filenameEntry.Text)
+		if err := os.WriteFile(filePath, []byte(contentEntry.Text), 0644); err != nil {
+			statusLabel.SetText("Error saving file.")
+			return
+		}
+		statusLabel.SetText(fmt.Sprintf("Saved to %s", filePath))
+	}
+
+	return container.NewBorder(
+		nil,
+		container.NewVBox(widget.NewButton("返回", func() { setScreen(makeExecuteScreen()) }), statusLabel),
+		nil, nil,
+		form,
 	)
 }
 
-// makeExecuteScreen creates the main functionality screen
 func makeExecuteScreen() fyne.CanvasObject {
-	// --- Data (Hardcoded for now) ---
-	nodes := []string{"Node A (192.168.1.10)", "Node B (192.168.1.11)", "Node C (192.168.1.12)"}
-	scripts := []string{"deploy_app.sh", "check_status.sh", "reboot_server.sh"}
+	// --- Data Loading ---
+	allNodes := loadNodes()
+	scriptFiles := loadScripts()
+
+	if len(allNodes) == 0 {
+		return container.NewCenter(widget.NewLabel("No nodes found. Please add a node first."))
+	}
+
+	// Map to keep full node data accessible from the string representation
+	nodeMap := make(map[string]Node)
+	var nodeOptions []string
+	for _, node := range allNodes {
+		label := fmt.Sprintf("%s (%s)", node.Name, node.IP)
+		nodeOptions = append(nodeOptions, label)
+		nodeMap[label] = node
+	}
 
 	// --- UI Widgets ---
-	nodesCheck := widget.NewCheckGroup(nodes, nil)
-	scriptSelect := widget.NewSelect(scripts, func(s string) {})
+	nodesCheck := widget.NewCheckGroup(nodeOptions, nil)
+	scriptSelect := widget.NewSelect(scriptFiles, nil)
 	statusLabel := widget.NewLabel("Ready. Select nodes and a script.")
 	statusLabel.Wrapping = fyne.TextWrapWord
 
 	var runButton *widget.Button
 	runButton = widget.NewButton("Run Script on Selected Nodes", func() {
-		selectedNodes := nodesCheck.Selected
+		selectedNodeLabels := nodesCheck.Selected
 		selectedScript := scriptSelect.Selected
 
-		if len(selectedNodes) == 0 || selectedScript == "" {
+		if len(selectedNodeLabels) == 0 || selectedScript == "" {
 			statusLabel.SetText("Error: Must select nodes and a script.")
 			return
 		}
@@ -105,15 +254,15 @@ func makeExecuteScreen() fyne.CanvasObject {
 		runButton.Disable()
 		go func() {
 			defer runButton.Enable()
-			for _, node := range selectedNodes {
-				statusLabel.SetText(fmt.Sprintf("Running '%s' on '%s'...", selectedScript, node))
+			for _, label := range selectedNodeLabels {
+				node := nodeMap[label] // Get the full node data
+				statusLabel.SetText(fmt.Sprintf("Simulating '%s' on '%s'...", selectedScript, node.Name))
 				time.Sleep(1 * time.Second) // Simulate work
 			}
 			statusLabel.SetText("All tasks completed successfully!")
 		}()
 	})
 
-	// --- Layout for this screen ---
 	return container.NewVBox(
 		widget.NewLabel("1. Select Nodes:"),
 		nodesCheck,

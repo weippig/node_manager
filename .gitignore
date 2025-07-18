@@ -1,0 +1,9 @@
+# Ignore SQLite database files
+*.db
+*.db-journal
+
+# mac system file 
+.DS_Store
+
+# script
+*.sh
