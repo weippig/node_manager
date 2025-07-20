@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/ssh"
 )
 
 // --- Structs and Globals ---
@@ -22,7 +24,7 @@ type Node struct {
 	ID         int
 	Name       string
 	IP         string
-	MacAddress string
+	MacAddress string // Re-added MacAddress field
 	Username   string
 	Password   string
 }
@@ -43,8 +45,8 @@ func initDB() {
 		CREATE TABLE IF NOT EXISTS nodes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
-			mac_address TEXT,
 			ip TEXT NOT NULL,
+			mac_address TEXT, -- Added mac_address column
 			username TEXT NOT NULL,
 			password TEXT NOT NULL
 		);
@@ -59,7 +61,7 @@ func initDB() {
 }
 
 func loadNodes() []Node {
-	rows, err := db.Query("SELECT id, name, mac_address, ip, username, password FROM nodes ORDER BY name ASC")
+	rows, err := db.Query("SELECT id, name, ip, mac_address, username, password FROM nodes ORDER BY name ASC") // Select mac_address
 	if err != nil {
 		log.Println("Failed to query nodes:", err)
 		return []Node{} // Return empty slice on error
@@ -69,7 +71,7 @@ func loadNodes() []Node {
 	var nodes []Node
 	for rows.Next() {
 		var n Node
-		if err := rows.Scan(&n.ID, &n.Name, &n.MacAddress, &n.IP, &n.Username, &n.Password); err != nil {
+		if err := rows.Scan(&n.ID, &n.Name, &n.IP, &n.MacAddress, &n.Username, &n.Password); err != nil { // Scan mac_address
 			log.Println("Failed to scan node row:", err)
 			continue
 		}
@@ -98,6 +100,16 @@ func loadScripts() []string {
 	return scripts
 }
 
+// readScriptContent reads the content of a script file from the 'script' directory.
+func readScriptContent(filename string) (string, error) {
+	filePath := filepath.Join("script", filename)
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read script file %s: %w", filename, err)
+	}
+	return string(content), nil
+}
+
 // --- Screen Management ---
 
 func setScreen(c fyne.CanvasObject) {
@@ -113,7 +125,7 @@ func main() {
 	myWindow := myApp.NewWindow("Node & Script Manager")
 	myWindow.Resize(fyne.NewSize(600, 400))
 
-	content = container.New(layout.NewStackLayout())
+	content = container.New(layout.NewMaxLayout())
 
 	// Create screen instances
 	addNodeScreen := makeAddNodeScreen()
@@ -139,10 +151,10 @@ func main() {
 func makeAddNodeScreen() fyne.CanvasObject {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("e.g., Web Server 1")
-	macAddressEntry := widget.NewEntry()
-	macAddressEntry.SetPlaceHolder("e.g., 24:5e:be:84:c4:9e")
 	ipEntry := widget.NewEntry()
 	ipEntry.SetPlaceHolder("e.g., 192.168.1.100")
+	macAddressEntry := widget.NewEntry() // Added Mac Address Entry
+	macAddressEntry.SetPlaceHolder("e.g., 00:1A:2B:3C:4D:5E")
 	userEntry := widget.NewEntry()
 	userEntry.SetPlaceHolder("e.g., admin")
 	passEntry := widget.NewPasswordEntry()
@@ -153,13 +165,14 @@ func makeAddNodeScreen() fyne.CanvasObject {
 	form := widget.NewForm(
 		&widget.FormItem{Text: "Node Name", Widget: nameEntry},
 		&widget.FormItem{Text: "IP Address", Widget: ipEntry},
-		&widget.FormItem{Text: "Mac Address", Widget: macAddressEntry},
+		&widget.FormItem{Text: "MAC Address", Widget: macAddressEntry}, // Added to form
 		&widget.FormItem{Text: "Username", Widget: userEntry},
 		&widget.FormItem{Text: "Password", Widget: passEntry},
 	)
 
 	form.OnSubmit = func() {
-		statement, err := db.Prepare("INSERT INTO nodes (name, mac_address, ip, username, password) VALUES (?, ?, ?, ?, ?)")
+		// Updated INSERT statement to include mac_address
+		statement, err := db.Prepare("INSERT INTO nodes (name, ip, mac_address, username, password) VALUES (?, ?, ?, ?, ?)")
 		if err != nil {
 			log.Println("DB prepare error:", err)
 			statusLabel.SetText("Database error.")
@@ -167,7 +180,8 @@ func makeAddNodeScreen() fyne.CanvasObject {
 		}
 		defer statement.Close()
 
-		_, err = statement.Exec(nameEntry.Text, macAddressEntry.Text, ipEntry.Text, userEntry.Text, passEntry.Text)
+		// Updated Exec to include macAddressEntry.Text
+		_, err = statement.Exec(nameEntry.Text, ipEntry.Text, macAddressEntry.Text, userEntry.Text, passEntry.Text)
 		if err != nil {
 			log.Println("DB exec error:", err)
 			statusLabel.SetText("Error: Node name may already exist.")
@@ -177,7 +191,7 @@ func makeAddNodeScreen() fyne.CanvasObject {
 		statusLabel.SetText(fmt.Sprintf("Node '%s' saved.", nameEntry.Text))
 		nameEntry.SetText("")
 		ipEntry.SetText("")
-		macAddressEntry.SetText("")
+		macAddressEntry.SetText("") // Clear Mac Address field
 		userEntry.SetText("")
 		passEntry.SetText("")
 		form.Refresh()
@@ -256,30 +270,98 @@ func makeExecuteScreen() fyne.CanvasObject {
 	var runButton *widget.Button
 	runButton = widget.NewButton("Run Script on Selected Nodes", func() {
 		selectedNodeLabels := nodesCheck.Selected
-		selectedScript := scriptSelect.Selected
+		selectedScriptFilename := scriptSelect.Selected
 
-		if len(selectedNodeLabels) == 0 || selectedScript == "" {
-			statusLabel.SetText("Error: Must select nodes and a script.")
+		if len(selectedNodeLabels) == 0 || selectedScriptFilename == "" {
+			fyne.Do(func() {
+				statusLabel.SetText("Error: Must select nodes and a script.")
+			})
 			return
 		}
 
-		runButton.Disable()
+		scriptContent, err := readScriptContent(selectedScriptFilename)
+		if err != nil {
+			fyne.Do(func() {
+				statusLabel.SetText(fmt.Sprintf("Error reading script: %v", err))
+			})
+			return
+		}
+
+		fyne.Do(func() {
+			runButton.Disable()
+			statusLabel.SetText("Starting script execution...")
+		})
+
 		go func() {
 			defer fyne.Do(func() {
 				runButton.Enable()
-			}) // Ensure button is re-enabled on main thread
+				statusLabel.SetText("All tasks completed. Ready for next execution.")
+			})
 
 			for _, label := range selectedNodeLabels {
 				node := nodeMap[label] // Get the full node data
-				fyne.Do(func() {
-					statusLabel.SetText(fmt.Sprintf("Simulating '%s' on '%s'...", selectedScript, node.Name))
-				}) // Update status on main thread
-				time.Sleep(1 * time.Second) // Simulate work
-			}
+				status := ""
 
-			fyne.Do(func() {
-				statusLabel.SetText("All tasks completed successfully!")
-			}) // Final status update on main thread
+				fyne.Do(func() {
+					statusLabel.SetText(fmt.Sprintf("Connecting to %s (%s)...", node.Name, node.IP))
+				})
+
+				// SSH Client Configuration
+				config := &ssh.ClientConfig{
+					User: node.Username,
+					Auth: []ssh.AuthMethod{
+						ssh.Password(node.Password),
+					},
+					HostKeyCallback: ssh.InsecureIgnoreHostKey(), // WARNING: Insecure for production!
+					Timeout:         5 * time.Second,
+				}
+
+				client, err := ssh.Dial("tcp", node.IP+":22", config)
+				if err != nil {
+					status = fmt.Sprintf("Failed to connect to %s: %v", node.Name, err)
+					fyne.Do(func() {
+						statusLabel.SetText(status)
+					})
+					time.Sleep(2 * time.Second) // Pause to show error
+					continue                    // Move to next node
+				}
+				defer client.Close()
+
+				session, err := client.NewSession()
+				if err != nil {
+					status = fmt.Sprintf("Failed to create session on %s: %v", node.Name, err)
+					fyne.Do(func() {
+						statusLabel.SetText(status)
+					})
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				defer session.Close()
+
+				// Capture stdout and stderr
+				var stdoutBuf, stderrBuf bytes.Buffer
+				session.Stdout = &stdoutBuf
+				session.Stderr = &stderrBuf
+
+				fyne.Do(func() {
+					statusLabel.SetText(fmt.Sprintf("Executing '%s' on %s...", selectedScriptFilename, node.Name))
+				})
+
+				// Run the script
+				err = session.Run(scriptContent) // Execute the script content directly
+				if err != nil {
+					status = fmt.Sprintf("Script '%s' on %s failed: %v\nSTDOUT:\n%s\nSTDERR:\n%s",
+						selectedScriptFilename, node.Name, err, stdoutBuf.String(), stderrBuf.String())
+				} else {
+					status = fmt.Sprintf("Script '%s' on %s succeeded.\nSTDOUT:\n%s\nSTDERR:\n%s",
+						selectedScriptFilename, node.Name, stdoutBuf.String(), stderrBuf.String())
+				}
+
+				fyne.Do(func() {
+					statusLabel.SetText(status)
+				})
+				time.Sleep(3 * time.Second) // Pause to show result for each node
+			}
 		}()
 	})
 
