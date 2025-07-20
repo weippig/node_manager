@@ -253,13 +253,21 @@ func makeExecuteScreen() fyne.CanvasObject {
 
 		runButton.Disable()
 		go func() {
-			defer runButton.Enable()
+			defer fyne.Do(func() {
+				runButton.Enable()
+			}) // Ensure button is re-enabled on main thread
+
 			for _, label := range selectedNodeLabels {
 				node := nodeMap[label] // Get the full node data
-				statusLabel.SetText(fmt.Sprintf("Simulating '%s' on '%s'...", selectedScript, node.Name))
+				fyne.Do(func() {
+					statusLabel.SetText(fmt.Sprintf("Simulating '%s' on '%s'...", selectedScript, node.Name))
+				}) // Update status on main thread
 				time.Sleep(1 * time.Second) // Simulate work
 			}
-			statusLabel.SetText("All tasks completed successfully!")
+
+			fyne.Do(func() {
+				statusLabel.SetText("All tasks completed successfully!")
+			}) // Final status update on main thread
 		}()
 	})
 
