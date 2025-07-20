@@ -19,11 +19,12 @@ import (
 // --- Structs and Globals ---
 
 type Node struct {
-	ID       int
-	Name     string
-	IP       string
-	Username string
-	Password string
+	ID         int
+	Name       string
+	IP         string
+	MacAddress string
+	Username   string
+	Password   string
 }
 
 var content *fyne.Container
@@ -42,6 +43,7 @@ func initDB() {
 		CREATE TABLE IF NOT EXISTS nodes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
+			mac_address TEXT,
 			ip TEXT NOT NULL,
 			username TEXT NOT NULL,
 			password TEXT NOT NULL
@@ -57,7 +59,7 @@ func initDB() {
 }
 
 func loadNodes() []Node {
-	rows, err := db.Query("SELECT id, name, ip, username, password FROM nodes ORDER BY name ASC")
+	rows, err := db.Query("SELECT id, name, mac_address, ip, username, password FROM nodes ORDER BY name ASC")
 	if err != nil {
 		log.Println("Failed to query nodes:", err)
 		return []Node{} // Return empty slice on error
@@ -67,7 +69,7 @@ func loadNodes() []Node {
 	var nodes []Node
 	for rows.Next() {
 		var n Node
-		if err := rows.Scan(&n.ID, &n.Name, &n.IP, &n.Username, &n.Password); err != nil {
+		if err := rows.Scan(&n.ID, &n.Name, &n.MacAddress, &n.IP, &n.Username, &n.Password); err != nil {
 			log.Println("Failed to scan node row:", err)
 			continue
 		}
@@ -111,7 +113,7 @@ func main() {
 	myWindow := myApp.NewWindow("Node & Script Manager")
 	myWindow.Resize(fyne.NewSize(600, 400))
 
-	content = container.New(layout.NewMaxLayout())
+	content = container.New(layout.NewStackLayout())
 
 	// Create screen instances
 	addNodeScreen := makeAddNodeScreen()
@@ -137,6 +139,8 @@ func main() {
 func makeAddNodeScreen() fyne.CanvasObject {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("e.g., Web Server 1")
+	macAddressEntry := widget.NewEntry()
+	macAddressEntry.SetPlaceHolder("e.g., 24:5e:be:84:c4:9e")
 	ipEntry := widget.NewEntry()
 	ipEntry.SetPlaceHolder("e.g., 192.168.1.100")
 	userEntry := widget.NewEntry()
@@ -149,12 +153,13 @@ func makeAddNodeScreen() fyne.CanvasObject {
 	form := widget.NewForm(
 		&widget.FormItem{Text: "Node Name", Widget: nameEntry},
 		&widget.FormItem{Text: "IP Address", Widget: ipEntry},
+		&widget.FormItem{Text: "Mac Address", Widget: macAddressEntry},
 		&widget.FormItem{Text: "Username", Widget: userEntry},
 		&widget.FormItem{Text: "Password", Widget: passEntry},
 	)
 
 	form.OnSubmit = func() {
-		statement, err := db.Prepare("INSERT INTO nodes (name, ip, username, password) VALUES (?, ?, ?, ?)")
+		statement, err := db.Prepare("INSERT INTO nodes (name, mac_address, ip, username, password) VALUES (?, ?, ?, ?, ?)")
 		if err != nil {
 			log.Println("DB prepare error:", err)
 			statusLabel.SetText("Database error.")
@@ -162,7 +167,7 @@ func makeAddNodeScreen() fyne.CanvasObject {
 		}
 		defer statement.Close()
 
-		_, err = statement.Exec(nameEntry.Text, ipEntry.Text, userEntry.Text, passEntry.Text)
+		_, err = statement.Exec(nameEntry.Text, macAddressEntry.Text, ipEntry.Text, userEntry.Text, passEntry.Text)
 		if err != nil {
 			log.Println("DB exec error:", err)
 			statusLabel.SetText("Error: Node name may already exist.")
@@ -170,6 +175,11 @@ func makeAddNodeScreen() fyne.CanvasObject {
 		}
 
 		statusLabel.SetText(fmt.Sprintf("Node '%s' saved.", nameEntry.Text))
+		nameEntry.SetText("")
+		ipEntry.SetText("")
+		macAddressEntry.SetText("")
+		userEntry.SetText("")
+		passEntry.SetText("")
 		form.Refresh()
 	}
 
@@ -207,6 +217,8 @@ func makeAddScriptScreen() fyne.CanvasObject {
 			return
 		}
 		statusLabel.SetText(fmt.Sprintf("Saved to %s", filePath))
+		filenameEntry.SetText("")
+		contentEntry.SetText("")
 	}
 
 	return container.NewBorder(
