@@ -1,0 +1,29 @@
+#!/bin/bash
+set -e
+
+# 找出 USB 裝置
+DEVICE=$(lsblk -S | grep usb | awk '{print $1}' | head -n1)
+
+if [ -z "$DEVICE" ]; then
+  echo "❌ No USB device found. Exiting."
+  exit 1
+fi
+
+echo "✅ Found USB device: /dev/$DEVICE"
+
+# 建立 RAM Disk 暫存區
+echo "🔧 Creating tmpfs at /tmp/fw..."
+mkdir -p /tmp/fw
+sudo mount -t tmpfs none /tmp/fw
+
+# 下載映像檔
+IMG_URL="https://qcos.qnap-no1.cc/x86_64/images/qnap-coreos_1.1.0-alpha.6_amd64.img"
+echo "⬇️  Downloading image from $IMG_URL..."
+sudo curl -fL "$IMG_URL" -o /tmp/fw/img
+
+# 燒錄到 USB 裝置
+echo "📝 Writing image to /dev/$DEVICE..."
+sudo dd if=/tmp/fw/img of=/dev/"$DEVICE" bs=1M oflag=direct status=progress
+
+echo "✅ Done writing. Rebooting now..."
+sudo reboot

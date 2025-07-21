@@ -1,0 +1,2 @@
+#!/bin/bash
+export TESTT="hello i am test"

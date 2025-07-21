@@ -1,4 +1,4 @@
-module github.com/node_manager
+module node_manager
 
 go 1.24.3
 
